@@ -1,0 +1,583 @@
+#!/bin/bash
+#
+# = Script: /usr/local/bin/hatch
+#
+# This script:
+#
+#  * Clones a VMWare template
+#  * Installs the Puppet-client on the new machine
+#  * Configures the network
+#  * Reboots the machine
+#
+# == Prerequisites
+#
+#  * A working Puppet Enterprise 3.x puppet master
+#  * Puppet Cloud Provisioner (CP control node)
+#  * Appropriate vCenter credentials in the user's ~/.fog file
+#  * Puppet Enterprise installation tarball
+#  * An appropriate Puppet Agent installation answer file
+#
+# If you also wish to use the optional vmspec script to reconfigure the
+# VM's CPU and RAM, then the prerequisites of that script also need to
+# be satisfied. See /usr/local/bin/vmspec for details.
+#
+# == VMware template requirements
+#
+#  * A CentOS or RHEL VMware template with:
+#
+#    - The public SSH key from the CP control node in
+#      /root/.ssh/authorized_keys.
+#
+#    - VMware-tools installed (necessary for powering on/off).
+#
+#    - A known static IP address.
+#
+#    - No entries in /etc/udev/rules.d/70-persistent-net.rules
+#      (Remove this file each time the template is booted for
+#      updates/maintenance etc).
+#
+# == Prerequisites for each host to be deployed
+#
+#   * An Address record in DNS pointing to an unused IP address.
+#
+# == Usage
+#
+#   hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
+#   hatch --help
+#
+# === Options
+#
+#   -h      :  Hostname of the new node
+#   -r      :  Server Role
+#   -e      :  Puppet Environment (Optional. Defaults to 'production')
+#   -m      :  Model Environment (used by Hiera. Also Optional. Defaults to 'prod')
+#   -u      :  Unattended. If set, the script will run without prompting
+#   -t      :  Template name. Optional. Defaults to 'centos6-static'
+#   -C      :  Number of virtual CPUs. Optional (Passed to VMSPEC script)
+#   -M      :  Amount of system memory, in MiB. Optional (Passed to VMSPEC script)
+#   --help  :  Print a help message and exit
+#
+# = Author
+#
+# Simon Young
+# simon@hoverflyconsulting.co.uk
+#
+# = Credits
+#
+# Based on a script by Ger Apeldoorn
+#  http://puppetspecialist.nl/2012/12/single-command-server-deployment/
+#
+# = TODO
+#
+# * Configure the network and reboot using Puppet code, rather than
+#   editing the configuration files with sed.
+#
+#-----------------------------------------------------------------------
+VERSION='2.0'
+
+#-----------------------------------------------------------------------
+# User-defined variables and defaults
+#-----------------------------------------------------------------------
+PATH='/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin'
+
+TEMPLATELOC='/path/to/VMware/templates/'
+TEMPLATENAME='centos6-static'
+
+PUPPET_TARBALL='/path/to/puppet-enterprise-tarball'
+AGENT_ANSWERS='/path/to/puppet_agent_answers_file'
+
+VCSERVER='your-vCenter-server.yourcompany.com'
+VCUSER='YOURDOMAIN\your_vsphere_username'
+
+# This is the (optional) script which sets CPU and RAM values on
+# the new VM:
+VMSPEC='/usr/local/bin/vmspec'
+
+# Set some defaults (only used if the VMSPEC script is present)
+CPUS='2'
+RAM='4096'
+
+# Our known static IP address:
+TEMPIP='xx.xx.xx.xx'
+
+#-----------------------------------------------------------------------
+## Some Useful Functions...
+#-----------------------------------------------------------------------
+
+#-----------------------------------------------------------------------
+# usage - Print usage information
+#-----------------------------------------------------------------------
+usage() {
+  echo 'Usage:  hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]'
+}
+
+#-----------------------------------------------------------------------
+# help - Print some more helpful usage information
+#-----------------------------------------------------------------------
+show_help() {
+  cat <<END_OF_HELP
+
+This is the 'hatch' auto-provisioning script. Version: $VERSION
+
+Script Actions:
+  * Clone a VMWare template
+  * Install the Puppet-client on the new machine
+  * Configure the network
+  * Reboot the machine
+
+Usage:
+  hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
+  hatch --help
+
+Options:
+  -h      :  Hostname of the new node
+  -r      :  Server Role
+  -e      :  Puppet Environment (Optional. Defaults to 'production')
+  -m      :  Model Environment (used by Hiera. Also Optional. Defaults to 'prod')
+  -u      :  Unattended. If set, the script will run without prompting
+  -t      :  Template name. Optional. Defaults to 'centos6-static'
+  -C      :  Number of virtual CPUs. Optional (Passed to VMSPEC script)
+  -M      :  Amount of system memory, in MiB. Optional (Passed to VMSPEC script)
+  --help  :  Print this message
+
+END_OF_HELP
+}
+
+#-----------------------------------------------------------------------
+# chkport - Try to connect to a network port every $SLEEP seconds until
+# successful. Times out after $TRIES is reached.
+#
+# Usage: chkport $IP $PORT $SLEEP $TRIES
+#
+# $SLEEP defaults to 2 seconds.
+# $TRIES defaults to 5 tries.
+#-----------------------------------------------------------------------
+chkport() {
+  IP=$1
+  PORT=$2
+  SLEEP=$4
+  TRIES=$3
+
+  if [ "$SLEEP" == '' ]; then SLEEP='2'; fi
+  if [ "$TRIES" == '' ]; then TRIES='5'; fi
+
+  STATE=$(nc -z $IP $PORT)
+  success=$?
+
+  count=0
+  while [ "$success" -ne 0 ]; do
+    if [ "$count" -eq "$TRIES" ]; then
+      echo "Waiting too long for connection to $IP:$PORT. Exiting"
+      exit 1
+    fi
+    sleep $SLEEP
+    echo "Waiting for connection to $IP:$PORT"
+    STATE=$(nc -z $IP $PORT)
+    success=$?
+    count=$((count + 1))
+  done
+
+  echo "Connected"
+}
+
+#-----------------------------------------------------------------------
+# chkcert - Check for the new node's certificate signing request. Time
+# out and exit after 20 seconds.
+#
+# This is essentially the same function as chkport, just with different
+# wording :)
+#-----------------------------------------------------------------------
+chkcert() {
+  HOST=$1
+
+  REQUEST=$(puppet certificate list --ca-location remote --certname cpcontrol | grep $HOST)
+  success=$?
+
+  count=0
+  while [ "$success" -ne 0 ]; do
+    if [ "$count" -eq 10 ]; then
+      echo "Waiting too long. Exiting"
+      exit 1
+    fi
+    sleep 2
+    echo "Waiting for certificate signing request"
+    REQUEST=$(puppet certificate list --ca-location remote --certname cpcontrol | grep $HOST)
+    success=$?
+    count=$((count + 1))
+  done
+
+  echo 'Certificate signing request received by puppet master'
+}
+
+#-----------------------------------------------------------------------
+# elapsed_time - Calculate elapsed time and output in a human-readable
+# format. If no finish time is supplied, assume they mean now :)
+#-----------------------------------------------------------------------
+elapsed_time() {
+  START=$1
+  FINISH=$2
+  if [ "$FINISH" == '' ]; then FINISH=$(/bin/date +%s); fi
+
+  seconds=$(($FINISH - $START))
+  mins=$((seconds / 60))
+  mins_in_secs=$((mins * 60))
+  remainder=$((seconds - mins_in_secs))
+  echo "${mins}m ${remainder}s"
+}
+
+#-----------------------------------------------------------------------
+# Process command line options. Set default environment to 'production',
+# as Puppet would. Assume the process is attended by default.
+#-----------------------------------------------------------------------
+if [ "$1" == '--help' ]; then
+  show_help && exit 0
+fi
+
+ENVIRONMENT='production'
+MODEL_ENVIRONMENT='prod'
+ATTENDED='yes'
+regex='^-'
+
+while getopts :h:r:e:m:C:M:t:u opt; do
+  case $opt in
+    h) if [[ "$OPTARG" =~ $regex || "$OPTARG" == '' ]]; then
+         echo "Invalid hostname: $OPTARG"
+         usage && exit 1
+       fi
+       HOST_NAME=$OPTARG
+       ;;
+    r) if [[ "$OPTARG" =~ $regex || "$OPTARG" == '' ]]; then
+         echo "Invalid role: $OPTARG"
+         usage && exit 1
+       fi
+       ROLE=$OPTARG
+       ;;
+    e) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid environment: $OPTARG"
+         usage && exit 1
+       fi
+       ENVIRONMENT=$OPTARG
+       ;;
+    m) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid model environment: '$OPTARG'. Must be 'prod' or 'non-prod'"
+         usage && exit 1
+       fi
+       MODEL_ENVIRONMENT=$OPTARG
+       ;;
+    C) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid number of CPUs: '$OPTARG'"
+         usage && exit 1
+       fi
+       CPUS=$OPTARG
+       ;;
+    M) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid memory amount: '$OPTARG'"
+         usage && exit 1
+       fi
+       RAM=$OPTARG
+       ;;
+    t) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid template name: '$OPTARG'"
+         usage && exit 1
+       fi
+       TEMPLATENAME=$OPTARG
+       ;;
+    u) ATTENDED='no'
+       ;;
+    *) echo "Unrecognised option given"
+       usage && exit 1
+       ;;
+  esac
+done
+
+#-----------------------------------------------------------------------
+# Pre-flight checks
+#-----------------------------------------------------------------------
+now=$(/bin/date)
+echo
+echo '########################################################################'
+echo '                  hatch - Hatching new VMs since 2013'
+echo "                             Version: $VERSION"
+echo
+echo "                     $now"
+echo '########################################################################'
+echo
+echo "Running pre-flight checks..."
+echo
+echo -ne "Root rights                          : "
+if [ "$(id -u)" != "0" ]; then
+   echo "ERROR"; echo "Run this script as root"
+   exit 1
+fi
+echo "OK"
+
+echo
+echo "Command Line Parameters:-"
+
+# Check hostname was provided
+echo -ne "  * Hostname                         : "
+if [ "$HOST_NAME" == "" ]; then
+   echo "ERROR"; echo "Give the desired hostname as a parameter."
+   exit 1
+fi
+echo "OK"
+
+# Check role was provided
+echo -ne "  * Role                             : "
+if [ "$ROLE" == "" ]; then
+   echo "ERROR"; echo "Please supply the machine's role as a parameter (eg. 'dev-web')."
+   exit 1
+fi
+echo "OK"
+
+# Check environment was provided (defaults to 'production')
+echo -ne "  * Puppet Environment               : "
+if [ "$ENVIRONMENT" == "" ]; then
+   echo "WARNING"; echo "Puppet Environment was not provided. Defaulting to 'production'."
+fi
+echo "OK"
+
+# Check model environment was provided (defaults to 'prod')
+echo -ne "  * Model Environment                : "
+if [ "$MODEL_ENVIRONMENT" == "" ]; then
+   echo "WARNING"; echo "Model Environment was not provided. Defaulting to 'prod'."
+fi
+echo "OK"
+echo
+
+# Desired hostname DNS lookup and IP address validation
+echo -ne "Hostname DNS check                   : "
+DESIREDIP=$(host $HOST_NAME | awk '{print $NF}')
+
+if [[ ! $DESIREDIP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "Error: Invalid IP address: $DESIREDIP"
+    exit 1
+fi
+echo "OK"
+
+# Exit if the desired IP address is already in use
+echo -ne "Desired address available?           : "
+if ping -c 1 -w 1 "$DESIREDIP" >/dev/null ; then
+   echo "ERROR"; echo "Error: Address $DESIREDIP is not free!"
+   exit 1
+fi
+echo "OK"
+
+#-----------------------------------------------------------------------
+# TODO: We have a static temporary IP address, so we'll re-enable this
+# section later, once we move to DHCP.
+#-----------------------------------------------------------------------
+#
+#TEMPIP=$(puppet node_vmware find "$TEMPLATELOC$HOST_NAME" | grep ipaddress: | awk -F: '{print $2}' | sed -e 's/^[ \t]*//')
+#if [[ $TEMPIP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+#    echo $TEMPIP
+#else
+#    echo "Error finding ipaddress!"
+#    exit 1
+#fi
+
+# Exit if the temporary IP address is already in use
+echo -ne "Temporary address available?         : "
+if ping -c 1 -w 1 "$TEMPIP" >/dev/null 2>&1 ; then
+   echo "ERROR"; echo "Error: Temporary IP address $TEMPIP is not free!"
+   exit 1
+fi
+echo "OK"
+
+#-----------------------------------------------------------------------
+# We can't easily tell whether the certificate has already been signed,
+# but we can check for pending certificate signing requests.
+#-----------------------------------------------------------------------
+echo -ne "Pending certificate signing request? : "
+SIGNEDCERT=$(puppet certificate list --ca-location remote --certname cpcontrol | grep $HOST_NAME >/dev/null)
+if [ $? -eq 0 ]; then
+  echo "ERROR"
+  echo "A certificate request for $HOST_NAME already exists"
+  echo 'Remove it by running this command on the puppet master:'
+  echo "  puppet certificate clean $HOST_NAME"
+  exit 1
+fi
+echo "OK"
+
+#-----------------------------------------------------------------------
+# We drop the domain name from the fqdn to get the 'vmname' - i.e. the
+# name that appears in the vSphere console.
+#-----------------------------------------------------------------------
+VMNAME=$(echo $HOST_NAME | awk -F '.' '{print $1}')
+
+#-----------------------------------------------------------------------
+# Tell the user what we're about to do.
+#-----------------------------------------------------------------------
+echo
+echo '========================================================================'
+echo ' This script creates a new node in VMware and initializes Puppet.'
+echo
+echo "   Hostname:                  $HOST_NAME"
+echo "   VM name:                   $VMNAME"
+echo "   Role:                      $ROLE"
+echo "   Puppet Environment:        $ENVIRONMENT"
+echo "   Model (Hiera) Environment: $MODEL_ENVIRONMENT"
+echo "   IP Address:                $DESIREDIP"
+echo "   VM Template:               $TEMPLATENAME"
+echo "   CPU:                       $CPUS vCPU"
+echo "   RAM:                       $RAM MiB"
+echo '========================================================================'
+echo
+
+# By default, we wait for confirmation before proceeding. This can be
+# turned off with the -u commandline option ("unattended").
+if [ "$ATTENDED" == 'yes' ]; then
+  read -p 'Continue? [y/N] ' -n 1
+  if [[ ! $REPLY =~ ^[Yy]$ ]]
+  then
+    echo
+    exit 1
+  fi
+else
+  # Even if the script is unattended, we pause here for a moment to
+  # allow any humans in the vicinity to digest the summary information.
+  sleep 5
+fi
+
+# Record when we started
+time1=$(/bin/date +%s)
+
+echo
+echo
+echo 'Cloning the VM template...'
+
+puppet node_vmware create --template "${TEMPLATELOC}${TEMPLATENAME}" --vmname $VMNAME --wait-for-boot
+if [ $? -ne 0 ]; then echo "Error cloning template ${TEMPLATENAME}!"; exit 1; fi
+
+echo
+echo 'Waiting for SSH to initialise...'
+
+# Try connecting to port 22 until it responds.
+chkport $TEMPIP 22
+
+#-----------------------------------------------------------------------
+# Set hostname and IP address
+#-----------------------------------------------------------------------
+echo "Setting hostname to $HOST_NAME"
+ssh $TEMPIP "sed -i.bak \"s/HOSTNAME=.*/HOSTNAME=$HOST_NAME/\" /etc/sysconfig/network"
+if [ $? -ne 0 ]; then echo 'ERROR setting hostname (sed)!'; exit 1; fi
+
+echo "Setting IP address to $DESIREDIP"
+ssh $TEMPIP "sed -i.bak \"s/IPADDR=.*/IPADDR=$DESIREDIP/\" /etc/sysconfig/network-scripts/ifcfg-eth0"
+if [ $? -ne 0 ]; then echo 'ERROR during pushing networkconfiguration (cat)!'; exit 1; fi
+
+#-----------------------------------------------------------------------
+# Set the node's 'role' and 'model_envrionment' custom facts. This needs
+# to be done before the puppet agent is installed.
+#-----------------------------------------------------------------------
+echo "Setting server role to '$ROLE'"
+ssh $TEMPIP "mkdir -p /etc/puppetlabs/facter/facts.d && echo \"role: $ROLE\" > /etc/puppetlabs/facter/facts.d/role.yaml"
+
+echo "Setting model environment to '$MODEL_ENVIRONMENT'"
+ssh $TEMPIP "echo \"model_environment: $MODEL_ENVIRONMENT\" > /etc/puppetlabs/facter/facts.d/model_environment.yaml"
+
+#-----------------------------------------------------------------------
+# Install puppet agent
+#-----------------------------------------------------------------------
+echo
+echo 'Installing puppet agent on target machine'
+puppet node install --login=root --keyfile=/root/.ssh/id_rsa --install-script=puppet-enterprise --installer-payload=$PUPPET_TARBALL --installer-answers=$AGENT_ANSWERS --puppetagent-certname=$HOST_NAME $TEMPIP
+
+if [ $? -ne 0 ]; then echo 'Error during install of Puppet client!'; exit 1; fi
+
+#-----------------------------------------------------------------------
+# Set the node's environment. If it's 'production' do nothing.
+#-----------------------------------------------------------------------
+if [ "$ENVIRONMENT" != 'production' ]; then
+  echo "Setting server environment to '$ENVIRONMENT'"
+  ssh $TEMPIP "sed -i.bak \"s/environment =.*/environment = $ENVIRONMENT/\" /etc/puppetlabs/puppet/puppet.conf"
+else
+  echo "Server environment defaulting to 'production'"
+fi
+
+echo 'Puppet Installation Complete.'
+
+#-----------------------------------------------------------------------
+# Check for the certficate signing request, and sign it when it arrives
+#-----------------------------------------------------------------------
+echo
+echo 'Waiting for puppet agent to check in...'
+chkcert $HOST_NAME
+
+echo -n 'Signing certificate for puppet agent... '
+puppet certificate sign $HOST_NAME --ca-location remote --certname cpcontrol
+
+if [ $? -ne 0 ]; then echo "Error sigining certificate!"; exit 1; fi
+
+echo 'Done.'
+
+#-----------------------------------------------------------------------
+# Shutdown, reconfigure the VM and Reboot!
+#-----------------------------------------------------------------------
+echo
+echo 'Need to reboot host to perform final configuration.'
+echo 'Shutting down...'
+puppet node_vmware stop "${TEMPLATELOC}${VMNAME}"
+if [ $? -ne 0 ]; then echo 'ERROR stopping the host in VMWare!'; exit 1; fi
+echo 'Waiting until host is down...'
+
+STATE=$(puppet node_vmware find "${TEMPLATELOC}${VMNAME}" 2>&1 | grep powerstate| awk '{print $2}')
+while [ "$STATE" != 'poweredOff' ]; do
+    sleep 1
+    echo "Checking... "
+    STATE=$(puppet node_vmware find "${TEMPLATELOC}${VMNAME}" 2>&1 | grep powerstate| awk '{print $2}')
+done
+
+# Set number of CPUs and amount of memory, using an external script
+if [ -x "$VMSPEC" ]; then
+  echo 'Reconfiguring...'
+  $VMSPEC --cpus $CPUS --memory $RAM --vmname $VMNAME --server $VCSERVER --username $VCUSER
+  if [ $? -ne 0 ]; then echo 'WARNING: VM reconfiguration script failed. CPUs and RAM may need to be configured manually.'; fi
+else
+  echo "WARNING: VM reconfiguration script $VMSPEC not found or not executable. CPUs and RAM may need to be configured manually."
+fi
+
+# Start up!
+echo 'Powering on...'
+puppet node_vmware start "${TEMPLATELOC}${VMNAME}"
+if [ $? -ne 0 ]; then echo 'ERROR starting the host in VMware!'; exit 1; fi
+
+echo
+echo 'All done! :)'
+
+#-----------------------------------------------------------------------
+# Let the good people know everything's done - they just have to wait
+# until the puppet agent does its thing.
+#-----------------------------------------------------------------------
+elapsed=$(elapsed_time $time1)
+
+echo
+echo "Initial setup of $HOST_NAME was completed in $elapsed."
+echo 'The VM will now power on and configure itself. This process usually'
+echo 'takes a couple of minutes.'
+echo
+
+#-----------------------------------------------------------------------
+# If there's someone watching, they may like to see the puppet agent in
+# action.
+#-----------------------------------------------------------------------
+if [ "$ATTENDED" == 'yes' ]; then
+  read -p 'Would you like to view the system log as Puppet initialises the system? [y/N] ' -n 1
+  if [[ ! $REPLY =~ ^[Yy]$ ]]
+  then
+    echo
+    echo 'No problem. Your new VM should be ready shortly.'
+    echo
+  else
+    echo
+    echo 'OK. Waiting until the host is up...'
+    echo
+    chkport $HOST_NAME 22 6 10
+    /usr/bin/ssh -o StrictHostKeyChecking=no $HOST_NAME tail -F /var/log/messages
+  fi
+  echo
+  echo "All done. Exiting."
+  echo
+fi
+
+exit 0

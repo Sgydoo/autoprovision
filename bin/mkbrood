@@ -1,0 +1,214 @@
+#!/usr/bin/perl -w
+#
+## Warning: This file is managed by Puppet. Manual editing is not
+## recommended.
+#
+# = Script: /usr/local/bin/mkbrood
+#
+# Wrapper script for the 'hatch' auto-provisioning script. Allows a
+# number of new nodes to be produced (hatched) at one time, which is
+# useful when provisioning a complete application platform.
+#
+# A very simple YAML configuration file describes the servers to be
+# built. This script reads the file and creates the requested VMs. The
+# file takes the form:
+#
+# ---
+# puppet_environment: production
+# hiera_environment: non-prod
+# node1:
+#   hostname: sarah.puppetlunch.com:
+#   role: nginx-loadbalancer
+# node2:
+#   hostname: duck.puppetlunch.com:
+#   role: tomcat
+#   cpus: 4
+#
+#
+# The brood script expects to find its configuration files here:
+# /etc/brood/<platform>.yaml
+#
+# It relies on the 'hatch' script, which it expects to find at
+# /usr/local/bin/hatch
+#
+# Logs are written to:
+# /var/log/mkbrood/<platform>.log
+#
+# == Usage
+#
+#  mkbrood <platform>
+#  mkbrood --help
+#
+# Note that a valid environment with the same name as the specified
+# puppet environment must exist in the puppet configuration *before*
+# running this script.
+#
+# = Author
+#
+# Simon Young
+# simon@hoverflyconsulting.co.uk
+#
+#-----------------------------------------------------------------------
+use strict;
+use YAML::Tiny;
+
+my $VERSION = '1.0';
+
+my $help_message = qq{
+This is the 'mkbrood' multiple host provisioner. Version $VERSION
+
+mkbrood is a wrapper script for the 'hatch' auto-provisioning script.
+It allows a number of new nodes to be produced (hatched) at one time,
+which is useful when provisioning a complete application platform.
+
+The brood script expects to find its configuration files here:
+/etc/mkbrood/<platform>.yaml
+
+It relies on the 'hatch' script, which it expects to find here:
+/usr/local/bin/hatch
+
+Logs are written to:
+/var/log/mkbrood/<platform>.log
+
+Usage:
+
+ mkbrood <platform>
+ mkbrood --help
+
+Note that a valid environment with the same name as the specified
+puppet environment must exist in the puppet configuration *before*
+running this script.
+
+};
+
+if ($ARGV[0] eq '--help' or $ARGV[0] eq 'help') {
+  print $help_message;
+  exit 0;
+}
+
+my $platform = $ARGV[0] || die "Please specify a platform name";
+
+my $hatch   = '/usr/local/bin/hatch';
+my $confdir = '/etc/mkbrood';
+my $logdir  = '/var/log/mkbrood';
+my $logfile = "$logdir/$platform.log";
+my $cpus    = 2;                         # Default cpu count
+my $memory  = 2048;                      # Default memory allocation
+
+#-----------------------------------------------------------------------
+# This subroutine logs to the log file and also to STDOUT
+#-----------------------------------------------------------------------
+mkdir $logdir unless -d $logdir;
+open LOG, ">>$logfile" or die "ERROR: Couldn't open log file $logfile: $!\n";
+
+sub logprint {
+  my $message = shift;
+  chomp $message;
+  my $now = localtime();
+  print LOG "[$now] $message\n";
+  print STDOUT "$message\n";
+}
+
+my $now = localtime();
+my $welcome = qq{
+########################################################################
+                   Hatching a new platform: $platform
+                      $now
+########################################################################
+};
+print $welcome;
+print LOG $welcome;
+
+
+#-----------------------------------------------------------------------
+# Read the YAML configuration file
+#-----------------------------------------------------------------------
+my $config_file = "$confdir/$platform.yaml";
+
+unless (-r $config_file) {
+  logprint("ERROR: Can't read configuration file '$config_file'");
+  close LOG;
+  exit 1
+}
+
+unless (-x $hatch) {
+  logprint("ERROR: '$hatch' is not executable\n");
+  close LOG;
+  exit 1
+}
+
+my $yaml   = YAML::Tiny->new->read($config_file);
+my %config = %{$yaml->[0]};
+
+my @nodes = grep(/^node/, keys %config);
+my $numnodes = scalar @nodes;
+$now = localtime;
+
+my $puppet_environment = $config{'puppet_environment'} || 'production';
+my $hiera_environment  = $config{'hiera_environment'}  || 'prod';
+
+my $summary = qq/
+Puppet Environment: $puppet_environment
+Hiera Environment:  $hiera_environment
+Number of nodes:    $numnodes
+
+/;
+
+print $summary;
+print LOG $summary;
+
+#-----------------------------------------------------------------------
+# Run through the config and ask the user to verify
+#-----------------------------------------------------------------------
+foreach my $node (sort @nodes) {
+
+  # Basic validation
+  die "Malformed configuration file. Hostname required." unless exists $config{$node}{'hostname'};
+  die "Malformed configuration file. Server Role required." unless exists $config{$node}{'role'};
+
+  # Override the default CPU count, if specified in the config file
+  if (exists $config{$node}{'cpus'}) {
+    $cpus = $config{$node}{'cpus'};
+  } else {
+    $config{$node}{'cpus'} = $cpus;
+  }
+
+  # Override the default memory allocation, if specified in the config file
+  if (exists $config{$node}{'memory'}) {
+    $memory = $config{$node}{'memory'};
+  } else {
+    $config{$node}{'memory'} = $memory;
+  }
+
+  logprint("Host: $config{$node}{'hostname'} - CPUs: $cpus - RAM: ${memory} MB - Role: $config{$node}{'role'}");
+}
+
+print "\nLook OK? [y/N] : ";
+my $response = <STDIN>;
+chomp $response;
+
+if ($response =~ /^y/i) {
+  logprint('User accepted.');
+} else {
+  logprint('User terminated. Goodbye.');
+  close LOG;
+  exit 1;
+}
+
+#-----------------------------------------------------------------------
+# It all checks out. Call the hatcher in unattended mode, so we don't
+# keep getting prompted.
+#-----------------------------------------------------------------------
+foreach my $node (sort @nodes) {
+
+  my $retcode = system("$hatch -h $config{$node}{'hostname'} -m $hiera_environment -e $puppet_environment -r $config{$node}{'role'} -C $config{$node}{'cpus'} -M $config{$node}{'memory'} -u");
+
+  unless ($retcode == 0) {
+    logprint("ERROR: Hatch command exited with return code $retcode. Exiting.");
+    close LOG;
+    exit 2;
+  }
+}
+
+close LOG;
+

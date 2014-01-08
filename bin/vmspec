@@ -1,0 +1,159 @@
+#!/usr/bin/perl -w
+#
+# = Script: /usr/local/bin/vmspec
+#
+# Uses the VMware Perl SDK to set the number of virtual CPUs and amount
+# of RAM assigned to a virtual machine. Note that this may only be
+# performed on a VM which is powered off, so the script makes sure this
+# is the case before attempting to make any changes.
+#
+# This script is usually called from the 'hatch' auto-provisioning
+# script, but may be run on its own if required.
+r
+#
+# == Prerequisites
+#
+# Requires the VMware SDK for Perl:
+#   http://pubs.vmware.com/vsphere-51/index.jsp?topic=%2Fcom.vmware.perlsdk.install.doc%2Fcli_install.3.5.html
+#
+# Helpful docs for installation and setup:
+#   http://puppetlunch.com/puppet/vmware-perl-sdk.html
+#
+# Also requires a valid Credential Store. See the docs for how to create
+# one.
+#
+# == Example Usage
+#
+#   vmspec --cpus 1 --memory 2048 --vmname name_of_vm --server your-vCenter-server.yourcompany.com --username 'YOURDOMAIN\your_vsphere_username'
+#
+# == Author
+#
+# Simon Young (puppetlunch@hoverflyconsulting.co.uk), 13th December 2013.
+#   - Loosely based on VMware's vmreconfig.pl example script.
+#
+#-----------------------------------------------------------------------
+use strict;
+use VMware::VIRuntime;
+
+my $VERSION = '1.0';
+
+#-----------------------------------------------------------------------
+# Set some reasonable limits. These may be laughable in a year or two :)
+#-----------------------------------------------------------------------
+my $cpu_limit = 16;
+my $memory_limit = 32768;
+
+#-----------------------------------------------------------------------
+# Get user-supplied options for CPU and Memory
+#-----------------------------------------------------------------------
+my %opts = ( cpus   => { type     => '=i',
+                         help     => 'Number of Virtual CPUs',
+                         required => 1 },
+             vmname => { type     => '=s',
+                         help     => 'Virtual Machine name',
+                         required => 1 },
+             memory => { type     => '=i',
+                         help     => 'Amount of system memory in MiB',
+                         required => 1 } );
+
+Opts::add_options(%opts);
+Opts::parse();
+Opts::validate();
+
+my $entity_type = 'VirtualMachine';
+my $num_cpus    = Opts::get_option('cpus');
+my $memory      = Opts::get_option('memory');
+my $vmname      = Opts::get_option('vmname');
+my $filter_ref  = { name => $vmname };
+
+die "CPU limit '$num_cpus' exceeds CPU limit of $cpu_limit\n" if $num_cpus > $cpu_limit;
+die "Memory limit '$memory' exceeds the limit of $memory_limit MiB\n" if $memory > $memory_limit;
+
+Util::trace(0,"vmspec version $VERSION: Connecting...\n");
+Util::connect();
+
+my $entity_views = Vim::find_entity_views(
+  view_type => $entity_type,
+  filter    => $filter_ref,
+);
+
+my $vmspec  = VirtualMachineConfigSpec->new(
+  name     => $vmname,
+  memoryMB => $memory,
+  numCPUs  => $num_cpus,
+);
+
+#-----------------------------------------------------------------------
+# Don't continue if we find no VMs with the supplied name. Or if we find
+# more than one!
+#-----------------------------------------------------------------------
+my $num_views = scalar @$entity_views;
+if ($num_views == 0) {
+  Util::trace(0,"vmspec: No views found for vmname '$vmname'\n");
+  Util::trace(0,"vmspec: Disconnecting.\n");
+  Util::disconnect();
+  exit 3;
+} elsif ($num_views > 1) {
+  Util::trace(0,"vmspec: Multiple views ($num_views) found for vmname '$vmname'\n");
+  foreach my $entity_view (@$entity_views) {
+    my $entity_name = $entity_view->name;
+    Util::trace(0, "vmspec: Found $entity_type:    $entity_name\n");
+  }
+  Util::trace(0,"vmspec: Disconnecting.\n");
+  Util::disconnect();
+  exit 4;
+}
+
+#-----------------------------------------------------------------------
+# Ensure the VM we've found is powered off
+#-----------------------------------------------------------------------
+my $entity_view = @{$entity_views}[0];
+my $entity_name = $entity_view->name;
+Util::trace(0, "vmspec: Found $entity_type: $entity_name\n");
+
+my $powerState = $entity_view->runtime->powerState->val;
+
+if ($powerState eq 'poweredOn') {
+  Util::trace(0,"\nvmspec: The Virtual Machine '$vmname' is currently powered on. Unable to alter configuration.\n");
+  Util::trace(0,"Please ensure the VM is powered off before running this script.\n");
+  Util::trace(0,"vmspec: Disconnecting.\n");
+  Util::disconnect();
+  exit 2;
+}
+
+#---------------------------------------------------------------------
+# Actually make the change. Capture any errors and display.
+#---------------------------------------------------------------------
+my $plural = ($num_cpus > 1) ? 's' : '';
+Util::trace(0,"vmspec: Reconfiguring $vmname with $num_cpus vCPU${plural} and ${memory}MiB Memory...\n");
+eval {
+  $entity_view->ReconfigVM( spec => $vmspec );
+  Util::trace(0,"vmspec: VirtualMachine '" . $entity_view->name
+              . "' reconfigured successfully\n");
+};
+if ($@) {
+  Util::trace(0, "\nvmspec: Reconfiguration failed: ");
+  if (ref($@) eq 'SoapFault') {
+    if (ref($@->detail) eq 'TooManyDevices') {
+       Util::trace(0, "\nNumber of virtual devices exceeds "
+                    . "the maximum for a given controller.\n");
+    }
+    elsif (ref($@->detail) eq 'InvalidDeviceSpec') {
+       Util::trace(0, "The Device configuration is not valid\n");
+       Util::trace(0, "\nFollowing is the detailed error: \n\n$@");
+    }
+    elsif (ref($@->detail) eq 'FileAlreadyExists') {
+       Util::trace(0, "\nOperation failed because file already exists");
+    }
+    else {
+       Util::trace(0, "\n" . $@ . "\n");
+    }
+  }
+  else {
+     Util::trace(0, "\n" . $@ . "\n");
+  }
+}
+
+Util::trace(0,"vmspec: Disconnecting\n");
+Util::disconnect();
+
