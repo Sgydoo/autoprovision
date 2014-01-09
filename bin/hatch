@@ -101,19 +101,19 @@ RAM='4096'
 TEMPIP='xx.xx.xx.xx'
 
 #-----------------------------------------------------------------------
-## Some Useful Functions...
+# Some Useful Functions...
 #-----------------------------------------------------------------------
 
-#-----------------------------------------------------------------------
+#
 # usage - Print usage information
-#-----------------------------------------------------------------------
+#
 usage() {
   echo 'Usage:  hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]'
 }
 
-#-----------------------------------------------------------------------
+#
 # help - Print some more helpful usage information
-#-----------------------------------------------------------------------
+#
 show_help() {
   cat <<END_OF_HELP
 
@@ -143,7 +143,7 @@ Options:
 END_OF_HELP
 }
 
-#-----------------------------------------------------------------------
+#
 # chkport - Try to connect to a network port every $SLEEP seconds until
 # successful. Times out after $TRIES is reached.
 #
@@ -151,7 +151,7 @@ END_OF_HELP
 #
 # $SLEEP defaults to 2 seconds.
 # $TRIES defaults to 5 tries.
-#-----------------------------------------------------------------------
+#
 chkport() {
   IP=$1
   PORT=$2
@@ -180,13 +180,13 @@ chkport() {
   echo "Connected"
 }
 
-#-----------------------------------------------------------------------
+#
 # chkcert - Check for the new node's certificate signing request. Time
 # out and exit after 20 seconds.
 #
 # This is essentially the same function as chkport, just with different
 # wording :)
-#-----------------------------------------------------------------------
+#
 chkcert() {
   HOST=$1
 
@@ -209,10 +209,10 @@ chkcert() {
   echo 'Certificate signing request received by puppet master'
 }
 
-#-----------------------------------------------------------------------
+#
 # elapsed_time - Calculate elapsed time and output in a human-readable
 # format. If no finish time is supplied, assume they mean now :)
-#-----------------------------------------------------------------------
+#
 elapsed_time() {
   START=$1
   FINISH=$2
@@ -224,6 +224,7 @@ elapsed_time() {
   remainder=$((seconds - mins_in_secs))
   echo "${mins}m ${remainder}s"
 }
+
 
 #-----------------------------------------------------------------------
 # Process command line options. Set default environment to 'production',
@@ -362,19 +363,6 @@ if ping -c 1 -w 1 "$DESIREDIP" >/dev/null ; then
    exit 1
 fi
 echo "OK"
-
-#-----------------------------------------------------------------------
-# TODO: We have a static temporary IP address, so we'll re-enable this
-# section later, once we move to DHCP.
-#-----------------------------------------------------------------------
-#
-#TEMPIP=$(puppet node_vmware find "$TEMPLATELOC$HOST_NAME" | grep ipaddress: | awk -F: '{print $2}' | sed -e 's/^[ \t]*//')
-#if [[ $TEMPIP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-#    echo $TEMPIP
-#else
-#    echo "Error finding ipaddress!"
-#    exit 1
-#fi
 
 # Exit if the temporary IP address is already in use
 echo -ne "Temporary address available?         : "
