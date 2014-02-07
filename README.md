@@ -16,6 +16,10 @@ provisioned VM will not be possible without the 'vmspec' script.
 The 'mkbrood' script is simply a looping wrapper for 'hatch' for
 provisioning multiple nodes with one command.
 
+'hatch' is based on [a script by Ger Apeldoorn][hatch-origins]. Ger has
+kindly permitted me to publish this enhanced and embellished version
+on GitHub.
+
 ## Requirements
 
 Full details may be found in the aforementioned [Chapter 4][chapter-4]
@@ -66,3 +70,4 @@ Requires the Perl module YAML::Tiny (available in CentOS / RHEL as the perl-YAML
 [puppet-lunch]: http://puppetlunch.com
 [chapter-4]: http://puppetlunch.com/puppet/autoprovisioning.html
 [appendix-d]: http://puppetlunch.com/puppet/vmware-perl-sdk.html
+[hatch-origin]: http://puppetspecialist.nl/2012/12/single-command-server-deployment/
