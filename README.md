@@ -16,7 +16,7 @@ provisioned VM will not be possible without the 'vmspec' script.
 The 'mkbrood' script is simply a looping wrapper for 'hatch' for
 provisioning multiple nodes with one command.
 
-'hatch' is based on [a script by Ger Apeldoorn][hatch-origins]. Ger has
+'hatch' is based on [a script by Ger Apeldoorn][hatch-origin]. Ger has
 kindly permitted me to publish this enhanced and embellished version
 on GitHub.
 
