@@ -42,15 +42,15 @@
 #
 # == Usage
 #
-#   hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
+#   hatch -n hostname -r role [ -p puppet_environment ] [ -h hiera_environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
 #   hatch --help
 #
 # === Options
 #
-#   -h      :  Hostname of the new node
+#   -n      :  Hostname of the new node
 #   -r      :  Server Role
-#   -e      :  Puppet Environment (Optional. Defaults to 'production')
-#   -m      :  Model Environment (used by Hiera. Also Optional. Defaults to 'prod')
+#   -p      :  Puppet Environment (Optional. Defaults to 'production')
+#   -h      :  Hiera Environment (Also optional. Defaults to 'prod')
 #   -u      :  Unattended. If set, the script will run without prompting
 #   -t      :  Template name. Optional. Defaults to 'centos6-static'
 #   -C      :  Number of virtual CPUs. Optional (Passed to VMSPEC script)
@@ -60,20 +60,20 @@
 # = Author
 #
 # Simon Young
-# simon@hoverflyconsulting.co.uk
+# puppetlunch@hoverflyconsulting.co.uk
 #
 # = Credits
 #
 # Based on a script by Ger Apeldoorn
-#  http://puppetspecialist.nl/2012/12/single-command-server-deployment/
+#   http://puppetspecialist.nl/2012/12/single-command-server-deployment/
 #
-# = TODO
+# = TO-DO
 #
 # * Configure the network and reboot using Puppet code, rather than
 #   editing the configuration files with sed.
 #
 #-----------------------------------------------------------------------
-VERSION='2.0'
+VERSION='2.1'
 
 #-----------------------------------------------------------------------
 # User-defined variables and defaults
@@ -82,22 +82,23 @@ PATH='/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin'
 
 TEMPLATELOC='/path/to/VMware/templates/'
 TEMPLATENAME='centos6-static'
-
-PUPPET_TARBALL='/path/to/puppet-enterprise-tarball'
-AGENT_ANSWERS='/path/to/puppet_agent_answers_file'
-
-VCSERVER='your-vCenter-server.yourcompany.com'
-VCUSER='YOURDOMAIN\your_vsphere_username'
-
-# This is the (optional) script which sets CPU and RAM values on
-# the new VM:
-VMSPEC='/usr/local/bin/vmspec'
-
-# Set some defaults (only used if the VMSPEC script is present)
 CPUS='2'
 RAM='4096'
 
-# Our known static IP address:
+PUPPET_TARBALL='/path/to/puppet-enterprise-tarball.tar.gz''
+AGENT_ANSWERS='/path/to/puppet-agent-answers-file'
+
+VCSERVER='vccenter-server.yourdomain.com'
+VCUSER='DOMAIN\autoprovisioning_user'
+
+VMSPEC='/usr/local/bin/vmspec'
+
+# Set $TEMPIP if you're using a known static IP address instead of DHCP.
+#
+# Even if you are using a static IP address, there's no need to set this
+# as the script will determine the IP address anyway. Setting TEMPIP
+# just helps the script to do less work.
+#
 TEMPIP='xx.xx.xx.xx'
 
 #-----------------------------------------------------------------------
@@ -126,14 +127,14 @@ Script Actions:
   * Reboot the machine
 
 Usage:
-  hatch -h hostname -r role [ -e environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
+  hatch -n hostname -r role [ -p puppet_environment ] [ -h hiera_environment ] [ -u ] [ -t template ] [ -C numCPUs ] [-M memory ]
   hatch --help
 
 Options:
-  -h      :  Hostname of the new node
+  -n      :  Hostname of the new node
   -r      :  Server Role
-  -e      :  Puppet Environment (Optional. Defaults to 'production')
-  -m      :  Model Environment (used by Hiera. Also Optional. Defaults to 'prod')
+  -p      :  Puppet Environment (Optional. Defaults to 'production')
+  -h      :  Hiera Environment (Also optional. Defaults to 'prod')
   -u      :  Unattended. If set, the script will run without prompting
   -t      :  Template name. Optional. Defaults to 'centos6-static'
   -C      :  Number of virtual CPUs. Optional (Passed to VMSPEC script)
@@ -235,13 +236,13 @@ if [ "$1" == '--help' ]; then
 fi
 
 ENVIRONMENT='production'
-MODEL_ENVIRONMENT='prod'
+HIERA_ENVIRONMENT='prod'
 ATTENDED='yes'
 regex='^-'
 
-while getopts :h:r:e:m:C:M:t:u opt; do
+while getopts :n:r:p:h:C:M:t:u opt; do
   case $opt in
-    h) if [[ "$OPTARG" =~ $regex || "$OPTARG" == '' ]]; then
+    n) if [[ "$OPTARG" =~ $regex || "$OPTARG" == '' ]]; then
          echo "Invalid hostname: $OPTARG"
          usage && exit 1
        fi
@@ -253,17 +254,17 @@ while getopts :h:r:e:m:C:M:t:u opt; do
        fi
        ROLE=$OPTARG
        ;;
-    e) if [[ "$OPTARG" =~ $regex ]]; then
+    p) if [[ "$OPTARG" =~ $regex ]]; then
          echo "Invalid environment: $OPTARG"
          usage && exit 1
        fi
        ENVIRONMENT=$OPTARG
        ;;
-    m) if [[ "$OPTARG" =~ $regex ]]; then
-         echo "Invalid model environment: '$OPTARG'. Must be 'prod' or 'non-prod'"
+    h) if [[ "$OPTARG" =~ $regex ]]; then
+         echo "Invalid Hiera environment: '$OPTARG'. Must be 'prod' or 'non-prod'"
          usage && exit 1
        fi
-       MODEL_ENVIRONMENT=$OPTARG
+       HIERA_ENVIRONMENT=$OPTARG
        ;;
     C) if [[ "$OPTARG" =~ $regex ]]; then
          echo "Invalid number of CPUs: '$OPTARG'"
@@ -338,10 +339,10 @@ if [ "$ENVIRONMENT" == "" ]; then
 fi
 echo "OK"
 
-# Check model environment was provided (defaults to 'prod')
-echo -ne "  * Model Environment                : "
-if [ "$MODEL_ENVIRONMENT" == "" ]; then
-   echo "WARNING"; echo "Model Environment was not provided. Defaulting to 'prod'."
+# Check Hiera environment was provided (defaults to 'prod')
+echo -ne "  * Hiera Environment                : "
+if [ "$HIERA_ENVIRONMENT" == "" ]; then
+   echo "WARNING"; echo "Hiera Environment was not provided. Defaulting to 'prod'."
 fi
 echo "OK"
 echo
@@ -364,13 +365,16 @@ if ping -c 1 -w 1 "$DESIREDIP" >/dev/null ; then
 fi
 echo "OK"
 
-# Exit if the temporary IP address is already in use
-echo -ne "Temporary address available?         : "
-if ping -c 1 -w 1 "$TEMPIP" >/dev/null 2>&1 ; then
-   echo "ERROR"; echo "Error: Temporary IP address $TEMPIP is not free!"
-   exit 1
+# If we're using a static IP address, check that it's not already in use
+if [ "$TEMPIP" != '' ]; then
+  echo -ne "Temporary address available?         : "
+  if ping -c 1 -w 1 "$TEMPIP" >/dev/null 2>&1 ; then
+    echo "ERROR"; echo "Error: Temporary IP address $TEMPIP is not free!"
+    exit 1
+  fi
+  echo "OK"
 fi
-echo "OK"
+
 
 #-----------------------------------------------------------------------
 # We can't easily tell whether the certificate has already been signed,
@@ -404,7 +408,7 @@ echo "   Hostname:                  $HOST_NAME"
 echo "   VM name:                   $VMNAME"
 echo "   Role:                      $ROLE"
 echo "   Puppet Environment:        $ENVIRONMENT"
-echo "   Model (Hiera) Environment: $MODEL_ENVIRONMENT"
+echo "   Hiera Environment:         $HIERA_ENVIRONMENT"
 echo "   IP Address:                $DESIREDIP"
 echo "   VM Template:               $TEMPLATENAME"
 echo "   CPU:                       $CPUS vCPU"
@@ -437,6 +441,18 @@ echo 'Cloning the VM template...'
 puppet node_vmware create --template "${TEMPLATELOC}${TEMPLATENAME}" --vmname $VMNAME --wait-for-boot
 if [ $? -ne 0 ]; then echo "Error cloning template ${TEMPLATENAME}!"; exit 1; fi
 
+# If we're not using a known static IP address for our new VM, fetch the
+# temporary address from VMware.
+if [ "$TEMPIP" == '' ]; then
+  TEMPIP=$(puppet node_vmware find "${TEMPLATELOC}${VMNAME}" | grep ipaddress: | awk -F: '{print $2}' | sed -e 's/^[ \t]*//')
+  if [[ $TEMPIP =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    echo "Temporary IP address: $TEMPIP"
+  else
+    echo "Unable to determine IP address! Exiting."
+    exit 1
+  fi
+fi
+
 echo
 echo 'Waiting for SSH to initialise...'
 
@@ -455,14 +471,14 @@ ssh $TEMPIP "sed -i.bak \"s/IPADDR=.*/IPADDR=$DESIREDIP/\" /etc/sysconfig/networ
 if [ $? -ne 0 ]; then echo 'ERROR during pushing networkconfiguration (cat)!'; exit 1; fi
 
 #-----------------------------------------------------------------------
-# Set the node's 'role' and 'model_envrionment' custom facts. This needs
+# Set the node's 'role' and 'hiera_envrionment' custom facts. This needs
 # to be done before the puppet agent is installed.
 #-----------------------------------------------------------------------
 echo "Setting server role to '$ROLE'"
 ssh $TEMPIP "mkdir -p /etc/puppetlabs/facter/facts.d && echo \"role: $ROLE\" > /etc/puppetlabs/facter/facts.d/role.yaml"
 
-echo "Setting model environment to '$MODEL_ENVIRONMENT'"
-ssh $TEMPIP "echo \"model_environment: $MODEL_ENVIRONMENT\" > /etc/puppetlabs/facter/facts.d/model_environment.yaml"
+echo "Setting Hiera environment to '$HIERA_ENVIRONMENT'"
+ssh $TEMPIP "echo \"hiera_environment: $HIERA_ENVIRONMENT\" > /etc/puppetlabs/facter/facts.d/hiera_environment.yaml"
 
 #-----------------------------------------------------------------------
 # Install puppet agent
@@ -558,14 +574,15 @@ if [ "$ATTENDED" == 'yes' ]; then
     echo
   else
     echo
-    echo 'OK. Waiting until the host is up...'
+    echo 'OK. Waiting until the host is up. Press ctrl-c to exit at any time.'
     echo
     chkport $HOST_NAME 22 6 10
     /usr/bin/ssh -o StrictHostKeyChecking=no $HOST_NAME tail -F /var/log/messages
   fi
   echo
-  echo "All done. Exiting."
+  echo "All done. Exiting normally."
   echo
 fi
 
 exit 0
+
