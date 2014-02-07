@@ -20,9 +20,9 @@ provisioning multiple nodes with one command.
 kindly permitted me to publish this enhanced and embellished version
 on GitHub.
 
-## Requirements
+## Script Requirements
 
-Full details may be found in the aforementioned [Chapter 4][chapter-4]
+Full details and context may be found in the aforementioned [Chapter 4][chapter-4]
 of puppetlunch.com, but here's a quick overview...
 
 ### hatch
