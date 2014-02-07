@@ -9,7 +9,6 @@
 #
 # This script is usually called from the 'hatch' auto-provisioning
 # script, but may be run on its own if required.
-r
 #
 # == Prerequisites
 #
@@ -29,7 +28,6 @@ r
 # == Author
 #
 # Simon Young (puppetlunch@hoverflyconsulting.co.uk), 13th December 2013.
-#   - Loosely based on VMware's vmreconfig.pl example script.
 #
 #-----------------------------------------------------------------------
 use strict;
