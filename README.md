@@ -52,19 +52,43 @@ The hatch script will work best when run as root, but should be adaptable to run
 
 ### vmspec
 
-This is a Perl script which requires the VMware SDK for Perl. You can get this here:
+This is a Perl script which requires the VMware SDK for Perl. You can
+get this here:
 
 http://pubs.vmware.com/vsphere-51/index.jsp?topic=%2Fcom.vmware.perlsdk.install.doc%2Fcli_install.3.5.html
 
-Installation and setup of the Perl SDK on CentOS 6 has been documented in [Appendix D][appendix-d] of Puppet Lunch.
+Installation and setup of the Perl SDK on CentOS 6 has been documented
+in [Appendix D][appendix-d] of Puppet Lunch.
 
-The script also requires a valid Credential Store. See the docs for how to create one.
+The script also requires a valid Credential Store. See the docs for
+how to create one.
 
 ### mkbrood
 
-Another Perl script. This is a wrapper for hatch, which allows provisioning of multiple nodes with one command. Really, it's just a looping wrapper script with a fancy YAML configuration file :)
+Another Perl script. This is a wrapper for hatch, which allows
+provisioning of multiple nodes with one command. Really, it's just a
+looping wrapper script with a fancy YAML configuration file :)
 
-Requires the Perl module YAML::Tiny (available in CentOS / RHEL as the perl-YAML-Tiny package).
+Requires the Perl module YAML::Tiny (available in CentOS / RHEL as the
+'perl-YAML-Tiny' package).
+
+## Puppet Requirements
+
+The hatch script has been designed with a Hiera-based node
+classification in mind. To this end, it populates the new node with a
+couple of custom facter facts:
+
+* role
+* hiera_environment
+
+These are simply little snippets of YAML written to role.yaml and
+hiera_environment.yaml in /etc/puppetlabs/facter/facts.d.
+
+Of course Puppet allows you to set things up in any way you please,
+and I'm aware that this may not be the way you do things, but it
+serves to illustrate the flexibility of Puppet and how other
+automation tools can interact with it. So you can either use this
+method, or have fun doing it another way!
 
 
 [puppet-lunch]: http://puppetlunch.com
