@@ -81,7 +81,7 @@ VERSION='2.1'
 PATH='/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin'
 
 TEMPLATELOC='/path/to/VMware/templates/'
-TEMPLATENAME='centos6-static'
+TEMPLATENAME='vmware-template-name'
 CPUS='2'
 RAM='4096'
 
@@ -89,7 +89,7 @@ PUPPET_TARBALL='/path/to/puppet-enterprise-tarball.tar.gz''
 AGENT_ANSWERS='/path/to/puppet-agent-answers-file'
 
 VCSERVER='vccenter-server.yourdomain.com'
-VCUSER='DOMAIN\autoprovisioning_user'
+VCUSER='DOMAIN\autoprovisioning-user'
 
 VMSPEC='/usr/local/bin/vmspec'
 
