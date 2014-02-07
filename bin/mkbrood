@@ -1,8 +1,5 @@
 #!/usr/bin/perl -w
 #
-## Warning: This file is managed by Puppet. Manual editing is not
-## recommended.
-#
 # = Script: /usr/local/bin/mkbrood
 #
 # Wrapper script for the 'hatch' auto-provisioning script. Allows a
@@ -15,7 +12,7 @@
 #
 # ---
 # puppet_environment: production
-# hiera_environment: non-prod
+# hiera_environment: dev
 # node1:
 #   hostname: sarah.puppetlunch.com:
 #   role: nginx-loadbalancer
@@ -23,7 +20,10 @@
 #   hostname: duck.puppetlunch.com:
 #   role: tomcat
 #   cpus: 4
+#   memory: 4096
 #
+#
+# == Requirements
 #
 # The brood script expects to find its configuration files here:
 # /etc/brood/<platform>.yaml
@@ -39,20 +39,19 @@
 #  mkbrood <platform>
 #  mkbrood --help
 #
-# Note that a valid environment with the same name as the specified
-# puppet environment must exist in the puppet configuration *before*
-# running this script.
+# Note that any environments referred to in the configuration must exist
+# in the puppet configuration *before* running this script.
 #
 # = Author
 #
 # Simon Young
-# simon@hoverflyconsulting.co.uk
+# puppetlunch@hoverflyconsulting.co.uk
 #
 #-----------------------------------------------------------------------
 use strict;
 use YAML::Tiny;
 
-my $VERSION = '1.0';
+my $VERSION = '1.3';
 
 my $help_message = qq{
 This is the 'mkbrood' multiple host provisioner. Version $VERSION
@@ -62,22 +61,21 @@ It allows a number of new nodes to be produced (hatched) at one time,
 which is useful when provisioning a complete application platform.
 
 The brood script expects to find its configuration files here:
-/etc/mkbrood/<platform>.yaml
+ /etc/mkbrood/<platform>.yaml
 
 It relies on the 'hatch' script, which it expects to find here:
-/usr/local/bin/hatch
+ /usr/local/bin/hatch
 
 Logs are written to:
-/var/log/mkbrood/<platform>.log
+ /var/log/mkbrood/<platform>.log
 
 Usage:
 
  mkbrood <platform>
  mkbrood --help
 
-Note that a valid environment with the same name as the specified
-puppet environment must exist in the puppet configuration *before*
-running this script.
+Note that any environments referred to in the configuration must exist
+in the puppet configuration *before* running this script.
 
 };
 
@@ -201,7 +199,7 @@ if ($response =~ /^y/i) {
 #-----------------------------------------------------------------------
 foreach my $node (sort @nodes) {
 
-  my $retcode = system("$hatch -h $config{$node}{'hostname'} -m $hiera_environment -e $puppet_environment -r $config{$node}{'role'} -C $config{$node}{'cpus'} -M $config{$node}{'memory'} -u");
+  my $retcode = system("$hatch -n $config{$node}{'hostname'} -h $hiera_environment -p $puppet_environment -r $config{$node}{'role'} -C $config{$node}{'cpus'} -M $config{$node}{'memory'} -u");
 
   unless ($retcode == 0) {
     logprint("ERROR: Hatch command exited with return code $retcode. Exiting.");
